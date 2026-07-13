@@ -7,7 +7,7 @@
 
 terraform {
   backend "s3" {
-    bucket         = "demo-eks-manoj-shopcase"    # <-- CHANGE to your bucket name
+    bucket         = "demo-eks-manoj-shopcase"  # <-- CHANGE to your bucket name
     key            = "envs/qa/network/terraform.tfstate"
     region         = "us-east-1"                      # <-- CHANGE to your region
     use_lockfile = "true"
