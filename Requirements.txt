@@ -1,0 +1,126 @@
+1-Week Infrastructure & Deployment Plan
+Objective
+Build core AWS networking infrastructure via Terraform with dual CI/CD delivery (Jenkins + CodeBuild), stand up a Kubernetes application deployed via Helm, and implement an event-driven S3 → Lambda → SNS email notification pipeline — all completed within one week.
+
+Day 1–3 (Monday–Wednesday): Terraform Networking Foundation + Dual CI/CD
+Goal
+A working Terraform project provisioning core VPC networking, deployable through both Jenkins and AWS CodeBuild pipelines (both required, not either/or).
+Tasks
+Terraform project setup — multi-environment (dev, qa, prod)
+Repo structure:
+modules/
+  network/            # vpc, subnet, sg, nacl resources
+environments/
+  dev/
+    backend.tf        # remote state config (unique key per env)
+    main.tf            # calls modules/network with dev inputs
+    terraform.tfvars
+  qa/
+    backend.tf
+    main.tf
+    terraform.tfvars
+  prod/
+    backend.tf
+    main.tf
+    terraform.tfvars
+Shared networking logic lives once in modules/network; each environment folder only supplies its own variables (CIDR ranges, tags, instance sizing, etc.) and its own backend block — this keeps state fully isolated per environment while avoiding code duplication.
+Remote state backend: S3 bucket (versioning enabled) + DynamoDB lock table, one state file per environment via distinct keys, e.g.:
+envs/dev/network/terraform.tfstate
+envs/qa/network/terraform.tfstate
+envs/prod/network/terraform.tfstate
+Alternative to folder-per-env: single root module + Terraform workspaces (terraform workspace new dev|qa|prod), each workspace automatically gets its own state file under the same backend key. Folder-per-env is recommended for prod isolation (avoids accidental workspace select mistakes); workspaces are acceptable if simplicity is preferred.
+Variables and outputs defined for reusability across all three environments.
+Core networking module (modules/network, parameterized per environment)
+VPC (with DNS support/hostnames enabled) — different CIDR block per env (e.g. dev 10.0.0.0/16, qa 10.1.0.0/16, prod 10.2.0.0/16)
+Public + private subnets (multi-AZ)
+Internet Gateway / NAT Gateway (if private subnet egress needed)
+Route tables and associations
+Security Groups (baseline ingress/egress rules; prod locked down further than dev/qa)
+Network ACLs (subnet-level allow/deny rules)
+Jenkins pipeline — CI then CD
+Jenkinsfile parameterized by an ENVIRONMENT build parameter (dev/qa/prod) that selects the matching environments/<env> folder
+CI stage (runs on every commit/PR, before any deploy):
+terraform fmt -check -recursive → fails the build if any file is not formatted (no auto-fix in CI; formatting is a required PR gate)
+terraform init -backend=false → terraform validate → catches syntax/config errors early, independent of any environment's state
+(optional but recommended) tflint / checkov static analysis stage
+CD stage (runs after CI passes):
+terraform init (with backend for the selected env) → plan → manual approval (mandatory gate before prod) → apply
+Credentials wired via Jenkins credential store (AWS keys or IAM role); prod credentials scoped separately from dev/qa
+Plan output archived/posted for review; CI stage failures block the pipeline before any AWS credentials are even used
+AWS CodeBuild pipeline — CI then CD
+buildspec.yml parameterized by an environment variable (ENV=dev|qa|prod) selecting the same environments/<env> folder
+CI phase (install/pre_build): install Terraform → terraform fmt -check -recursive → terraform init -backend=false → terraform validate; build fails fast here if fmt/validate don't pass
+CD phase (build): terraform init (with backend) → plan → apply
+CodeBuild project + IAM service role scoped to required Terraform permissions; consider a separate CodeBuild project (or environment variable override) per environment so prod applies can be gated independently
+Optionally wired into CodePipeline for a manual approval action between plan and apply on qa/prod
+Validation
+Apply dev → qa → prod in order via both pipelines against the same Terraform code, each writing to its own state file (no cross-env state conflicts since keys are distinct)
+Confirm VPC/subnets/SG/NACL created and visible in AWS console for all three environments
+Confirm terraform plan in one environment never shows changes belonging to another (proves state isolation)
+Tear-down/destroy tested at least once (in dev) to confirm clean rollback without touching qa/prod state
+Deliverable
+Terraform code in version control supporting three fully isolated environments (dev, qa, prod) each with its own state file, deployable through both Jenkins and CodeBuild pipelines end to end.
+
+Day 4 (Thursday): Kubernetes Application via Helm
+Goal
+A basic Kubernetes cluster running a simple web application, deployed using a Helm chart.
+Tasks
+Cluster
+Stand up a basic cluster (EKS, kind, or minikube depending on environment/cost constraints)
+Confirm kubectl access and node readiness
+Application
+Simple web app (e.g., nginx or a basic containerized app) with a Dockerfile if custom image is needed
+Container image pushed to a registry (ECR or similar) if not using a public image
+Helm chart
+Chart scaffold (Chart.yaml, values.yaml, templates/)
+Deployment, Service (and Ingress if external access is needed) templates
+Configurable via values.yaml (replica count, image tag, resource limits)
+Deploy & validate
+helm install/upgrade into the cluster
+Confirm pod health, service reachability (port-forward or LoadBalancer/Ingress)
+Deliverable
+Running cluster with the web app accessible, deployed and upgradable via a single Helm chart.
+
+Day 5 (Friday): Event-Driven Architecture — S3 → Lambda → SNS → Email
+Goal
+On object upload to an S3 bucket, trigger a Lambda function, which publishes to an SNS topic that emails a notification including the uploaded file's name.
+Tasks
+S3 bucket
+Bucket created with event notification configured for s3:ObjectCreated:* (using S3 Object Lambda or standard event notification → Lambda, per environment preference)
+Lambda function
+Triggered by the S3 event
+Parses event payload to extract object key/file name
+Publishes a message to the SNS topic (includes file name in the message body/subject)
+IAM role scoped to: read from S3 event, sns:Publish
+SNS topic
+Topic created with an email subscription (subscriber confirms via the confirmation email)
+Message format includes bucket name, file name, and timestamp
+End-to-end test
+Upload a test file to the bucket
+Confirm Lambda invocation (CloudWatch Logs)
+Confirm email received with correct file name
+Deliverable
+Fully working event pipeline: file upload → Lambda trigger → SNS → email notification with file name.
+
+Week Summary / Definition of Done
+Day
+Deliverable
+Status Check
+Mon–Wed
+Terraform VPC/Subnet/SG/NACL across dev, qa, prod (separate state files), deployed via Jenkins and CodeBuild
+Both pipelines apply successfully in all 3 envs; state files isolated
+Thu
+K8s cluster + web app via Helm
+helm status healthy, app reachable
+Fri
+S3 → Lambda → SNS → email with file name
+Test upload triggers correct email
+
+Notes / Assumptions
+AWS account access and permissions assumed available for VPC, IAM, Lambda, S3, SNS, EKS/CodeBuild/Jenkins agent — across dev, qa, and prod accounts/regions as applicable.
+Jenkins server/agent assumed pre-existing or stood up early Monday to avoid blocking pipeline work.
+Use separate Terraform state file per environment (dev/qa/prod) via distinct backend keys or workspaces — this is required, not just for pipeline conflict avoidance, so that a change in one environment can never affect another's state.
+Recommend applying changes in order dev → qa → prod, with prod requiring manual approval in both Jenkins and CodeBuild pipelines.
+
+
+
