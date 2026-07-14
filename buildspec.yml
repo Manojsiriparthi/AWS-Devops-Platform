@@ -29,7 +29,7 @@ phases:
       - echo "Action to execute - $ACTIONS"
       - |
         if [ "$ACTIONS" = "apply" ]; then
-          terraform apply -input=false -auto-approve tfplan -lock=false
+          terraform apply -input=false -auto-approve tfplan
         elif [ "$ACTIONS" = "destroy" ]; then
           terraform destroy -input=false -auto-approve -lock=false
         else
