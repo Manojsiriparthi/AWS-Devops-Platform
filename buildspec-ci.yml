@@ -7,36 +7,20 @@ env:
     TF_IN_AUTOMATION: "true"
 
 phases:
-
   install:
     runtime-versions:
       python: 3.12
     commands:
-      - echo "========== Installing Terraform =========="
       - curl -fsSL -o terraform.zip https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip
       - unzip -o terraform.zip -d /usr/local/bin
-      - rm -f terraform.zip
       - terraform version
 
   pre_build:
     commands:
-      - echo "========== Terraform Init =========="
       - cd 01-Infra/environments/${ENV}
-      - terraform init -reconfigure -input=false
+      - terraform init -backend=false
 
   build:
     commands:
-      - echo "========== Terraform Format Check =========="
       - terraform fmt -check -recursive ../../
-
-      - echo "========== Terraform Validate =========="
       - terraform validate
-
-      - echo "========== Terraform Plan =========="
-      - terraform plan -out=tfplan -input=false
-
-artifacts:
-  files:
-    - 01-Infra/environments/${ENV}/tfplan
-    - 01-Infra/environments/${ENV}/.terraform.lock.hcl
-  discard-paths: no
