@@ -4,8 +4,6 @@ env:
   variables:
     TF_IN_AUTOMATION: "true"
     TF_VERSION: "1.12.2"
-    ENV: "dev"
-    ACTIONS: "apply"
 
 phases:
   install:
@@ -21,14 +19,24 @@ phases:
       - echo "Environment - $ENV"
       - echo "Actions - $ACTIONS"
       - cd 01-Infra/environments/$ENV
+      - echo "Cleaning up any existing locks..."
+      - aws s3 rm s3://demo-eks-manoj-shopcase/envs/dev/network/terraform.tfstate.tflock --ignore-error || true
 
   build:
     commands:
       - terraform init -input=false
-      - terraform plan -input=false -out=tfplan
+      - terraform plan -input=false -out=tfplan -lock=false
       - echo "Action to execute - $ACTIONS"
-      - test "$ACTIONS" = "apply" && terraform apply -input=false -auto-approve tfplan
-      - test "$ACTIONS" = "destroy" && terraform destroy -input=false -auto-approve
+      - |
+        if [ "$ACTIONS" = "apply" ]; then
+          terraform apply -input=false -auto-approve tfplan -lock=false
+        elif [ "$ACTIONS" = "destroy" ]; then
+          terraform destroy -input=false -auto-approve -lock=false
+        else
+          echo "Invalid ACTIONS value: $ACTIONS"
+          echo "Valid values: apply, destroy"
+          exit 1
+        fi
 
 artifacts:
   files:
