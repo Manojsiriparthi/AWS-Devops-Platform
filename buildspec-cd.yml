@@ -2,12 +2,39 @@ version: 0.2
 
 env:
   variables:
-    ENV: "dev"
     TF_IN_AUTOMATION: "true"
+    TF_VERSION: "1.12.2"
 
 phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - curl -fsSL -o terraform.zip https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip
+      - unzip -o terraform.zip -d /usr/local/bin
+      - terraform version
+
+  pre_build:
+    commands:
+      - echo "Environment: $ENV"
+      - echo "Actions: $ACTIONS"
+      - cd 01-Infra/environments/$ENV
+
   build:
     commands:
-      - cd 01-Infra/environments/${ENV}
       - terraform init -input=false
-      - terraform apply -auto-approve tfplan
+      - terraform plan -input=false -out=tfplan
+      - |
+        if [ "$ACTIONS" = "apply" ]; then
+          terraform apply -input=false -auto-approve tfplan
+        elif [ "$ACTIONS" = "destroy" ]; then
+          terraform destroy -input=false -auto-approve
+        else
+          echo "Invalid ACTIONS value: $ACTIONS"
+          exit 1
+        fi
+
+artifacts:
+  files:
+    - "**/*"
+  name: terraform-cd-$ENV-$ACTIONS
