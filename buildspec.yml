@@ -1,0 +1,88 @@
+version: 0.2
+
+env:
+  variables:
+    ENV: "dev"
+    TF_VERSION: "1.12.2"
+    TF_IN_AUTOMATION: "true"
+
+phases:
+
+  # ===========================================================================
+  # INSTALL PHASE
+  # ===========================================================================
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - echo "=== Installing Terraform v${TF_VERSION} ==="
+      - curl -fsSL -o terraform.zip https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip
+      - unzip -o terraform.zip -d /usr/local/bin/
+      - rm -f terraform.zip
+      - terraform version
+      - echo "Terraform installed successfully"
+
+  # ===========================================================================
+  # PRE-BUILD (CI)
+  # ===========================================================================
+  pre_build:
+    commands:
+      - echo "=============================="
+      - echo "Terraform Format Check"
+      - echo "=============================="
+      - terraform fmt -check -recursive $CODEBUILD_SRC_DIR/01-Infra/
+      - echo "Format check passed"
+      - echo "=============================="
+      - echo "Terraform Validate"
+      - echo "=============================="
+      - cd $CODEBUILD_SRC_DIR/01-Infra/environments/${ENV}
+      - terraform init -backend=false -input=false
+      - terraform validate
+      - echo "Validation passed"
+
+  # ===========================================================================
+  # BUILD (CD)
+  # ===========================================================================
+  build:
+    commands:
+      - echo "=============================="
+      - echo "Terraform Init (${ENV})"
+      - echo "=============================="
+      - cd $CODEBUILD_SRC_DIR/01-Infra/environments/${ENV}
+      - terraform init -input=false
+      - echo "Backend initialized"
+      - echo "=============================="
+      - echo "Terraform Plan"
+      - echo "=============================="
+      - terraform plan -out=tfplan -input=false
+      - echo "Plan generated successfully"
+      - echo "=============================="
+      - echo "Terraform Apply"
+      - echo "=============================="
+      - terraform apply -auto-approve -input=false tfplan
+      - echo "Apply completed successfully"
+      - echo "=============================="
+      - echo "Terraform Outputs"
+      - echo "=============================="
+      - terraform output || true
+
+  # ===========================================================================
+  # POST BUILD
+  # ===========================================================================
+  post_build:
+    commands:
+      - echo "=============================="
+      - echo "Pipeline Completed"
+      - echo "Environment : ${ENV}"
+      - echo "Build Status: ${CODEBUILD_BUILD_SUCCEEDING}"
+      - if [ "$CODEBUILD_BUILD_SUCCEEDING" = "1" ]; then echo "SUCCESS - Terraform deployment completed."; else echo "FAILED - Check CodeBuild logs."; fi
+
+artifacts:
+  files:
+    - "01-Infra/environments/${ENV}/tfplan"
+  discard-paths: yes
+
+cache:
+  paths:
+    - "/root/.terraform.d/plugin-cache/**/*"
+    - "01-Infra/environments/${ENV}/.terraform/**/*"
