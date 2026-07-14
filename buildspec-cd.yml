@@ -1,0 +1,13 @@
+version: 0.2
+
+env:
+  variables:
+    ENV: "dev"
+    TF_IN_AUTOMATION: "true"
+
+phases:
+  build:
+    commands:
+      - cd 01-Infra/environments/${ENV}
+      - terraform init -input=false
+      - terraform apply -auto-approve tfplan
