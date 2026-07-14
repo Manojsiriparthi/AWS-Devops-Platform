@@ -24,15 +24,9 @@ phases:
     commands:
       - terraform init -input=false
       - terraform plan -input=false -out=tfplan
-      - |
-        if [ "$ACTIONS" = "apply" ]; then
-          terraform apply -input=false -auto-approve tfplan
-        elif [ "$ACTIONS" = "destroy" ]; then
-          terraform destroy -input=false -auto-approve
-        else
-          echo "Invalid ACTIONS value: $ACTIONS"
-          exit 1
-        fi
+      - echo "Executing action: $ACTIONS"
+      - if [ "$ACTIONS" = "apply" ]; then terraform apply -input=false -auto-approve tfplan; fi
+      - if [ "$ACTIONS" = "destroy" ]; then terraform destroy -input=false -auto-approve; fi
 
 artifacts:
   files:
