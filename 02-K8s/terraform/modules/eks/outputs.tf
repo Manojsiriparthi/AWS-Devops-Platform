@@ -97,7 +97,7 @@ output "kubectl_config" {
   value = {
     cluster_name     = aws_eks_cluster.main.name
     endpoint        = aws_eks_cluster.main.endpoint
-    region          = data.aws_region.current.name
+    region          = data.aws_region.current.region
     certificate_authority = aws_eks_cluster.main.certificate_authority[0].data
   }
 }
@@ -109,7 +109,7 @@ data "aws_caller_identity" "current" {}
 
 output "region" {
   description = "AWS region"
-  value       = data.aws_region.current.name
+  value       = data.aws_region.current.region
 }
 
 output "account_id" {

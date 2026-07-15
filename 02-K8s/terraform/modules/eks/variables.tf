@@ -19,7 +19,7 @@ variable "common_tags" {
 variable "cluster_version" {
   description = "Kubernetes version for the EKS cluster"
   type        = string
-  default     = "1.29"
+  default     = "1.34"
 }
 
 variable "cluster_endpoint_public_access_cidrs" {

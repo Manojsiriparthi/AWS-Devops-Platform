@@ -3,7 +3,7 @@
 # ==============================================================================
 
 # Cluster Configuration
-cluster_version                      = "1.29"
+cluster_version                      = "1.34"
 cluster_endpoint_public_access_cidrs = ["0.0.0.0/0"]  # Dev: Open access
 cluster_enabled_log_types           = ["api", "audit"]  # Reduced logging for cost
 
