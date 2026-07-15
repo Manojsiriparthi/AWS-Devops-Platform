@@ -29,6 +29,14 @@ autoscaling:
 securityContext:
   runAsNonRoot: false
   runAsUser: 0
+  fsGroup: 0
+
+# Relaxed container security context for dev  
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop: []  # Don't drop all capabilities in dev
 
 # Development-specific labels
 labels:
