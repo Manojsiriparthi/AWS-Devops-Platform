@@ -1,0 +1,19 @@
+apiVersion: v2
+name: nginx-app
+description: A simple nginx web application for Day 4 Kubernetes deployment
+type: application
+version: 0.1.0
+appVersion: "1.25"
+home: https://github.com/your-org/aws-devops-platform
+sources:
+  - https://github.com/your-org/aws-devops-platform
+maintainers:
+  - name: DevOps Team
+    email: devops@example.com
+keywords:
+  - nginx
+  - web
+  - kubernetes
+  - demo
+annotations:
+  category: WebServer

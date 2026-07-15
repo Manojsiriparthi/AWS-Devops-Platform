@@ -11,16 +11,24 @@ phases:
     runtime-versions:
       python: 3.12
     commands:
+      - echo "Installing Terraform $TF_VERSION for environment - $ENV"
       - curl -fsSL -o terraform.zip https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip
       - unzip -o terraform.zip -d /usr/local/bin
       - terraform version
 
   pre_build:
     commands:
-      - cd 01-Infra/environments/${ENV}
+      - echo "Initializing Terraform for environment - $ENV"
+      - cd 01-Infra/environments/$ENV
       - terraform init -backend=false
 
   build:
     commands:
+      - echo "Running Terraform validation for environment - $ENV"
       - terraform fmt -check -recursive ../../
       - terraform validate
+
+artifacts:
+  files:
+    - "**/*"
+  name: terraform-ci-$ENV
