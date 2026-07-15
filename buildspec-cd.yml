@@ -1,34 +1,212 @@
 version: 0.2
 
+# ==============================================================================
+# AWS CodeBuild - CD Specification (Continuous Deployment)
+# Deploys validated artifacts to target environment
+# ==============================================================================
+
 env:
   variables:
-    TF_IN_AUTOMATION: "true"
-    TF_VERSION: "1.12.2"
+    ENV: "dev"
+    AWS_DEFAULT_REGION: "us-east-1"
+    
+  parameter-store:
+    # Environment-specific parameters
+    # SLACK_WEBHOOK: /codebuild/slack-webhook
+    # NOTIFICATION_EMAIL: /codebuild/notification-email
 
 phases:
   install:
     runtime-versions:
-      python: 3.12
+      python: 3.9
+      nodejs: 18
+      docker: 20
     commands:
-      - curl -fsSL -o terraform.zip https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip
-      - unzip -o terraform.zip -d /usr/local/bin
-      - terraform version
+      - echo "CD Phase - Installing deployment tools..."
+      
+      # Install Terraform
+      - wget -O terraform.zip https://releases.hashicorp.com/terraform/1.5.0/terraform_1.5.0_linux_amd64.zip
+      - unzip terraform.zip
+      - mv terraform /usr/local/bin/
+      
+      # Install kubectl
+      - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+      - chmod +x kubectl
+      - mv kubectl /usr/local/bin/
+      
+      # Install Helm
+      - curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+      - chmod 700 get_helm.sh
+      - ./get_helm.sh
 
   pre_build:
     commands:
-      - echo "Environment: $ENV"
-      - echo "Actions: $ACTIONS"
+      - echo "CD Pre-build phase started on `date`"
+      - echo "Deploying to environment: $ENV"
+      
+      # Authenticate to ECR
+      - echo "Authenticating to ECR..."
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      
+      # Verify infrastructure state
+      - echo "Verifying infrastructure state..."
       - cd 01-Infra/environments/$ENV
+      - terraform init
+      - terraform plan -detailed-exitcode || INFRA_CHANGES=$?
+      - cd ../../..
+      
+      - cd 02-K8s/terraform/environments/$ENV
+      - terraform init
+      - terraform plan -detailed-exitcode || EKS_CHANGES=$?
+      - cd ../../../..
 
   build:
     commands:
-      - terraform init -input=false
-      - terraform plan -input=false -out=tfplan
-      - echo "Executing action: $ACTIONS"
-      - if [ "$ACTIONS" = "apply" ]; then terraform apply -input=false -auto-approve tfplan; fi
-      - if [ "$ACTIONS" = "destroy" ]; then terraform destroy -input=false -auto-approve; fi
+      - echo "CD Build phase started on `date`"
+      
+      # Deploy infrastructure if changes detected
+      - |
+        if [ "$INFRA_CHANGES" = "2" ] || [ "$FORCE_INFRA_DEPLOY" = "true" ]; then
+          echo "Deploying VPC infrastructure changes..."
+          cd 01-Infra/environments/$ENV
+          terraform apply -auto-approve
+          cd ../../..
+        else
+          echo "No VPC infrastructure changes detected"
+        fi
+      
+      - |
+        if [ "$EKS_CHANGES" = "2" ] || [ "$FORCE_EKS_DEPLOY" = "true" ]; then
+          echo "Deploying EKS infrastructure changes..."
+          cd 02-K8s/terraform/environments/$ENV
+          terraform apply -auto-approve
+          cd ../../../..
+        else
+          echo "No EKS infrastructure changes detected"
+        fi
+      
+      # Get EKS cluster information
+      - echo "Configuring Kubernetes access..."
+      - CLUSTER_NAME=$(cd 02-K8s/terraform/environments/$ENV && terraform output -raw cluster_name)
+      - aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_DEFAULT_REGION
+      
+      # Verify cluster connectivity
+      - kubectl cluster-info
+      - kubectl get nodes
+      
+      # Install AWS Load Balancer Controller if needed
+      - |
+        if ! kubectl get deployment aws-load-balancer-controller -n kube-system &> /dev/null; then
+          echo "Installing AWS Load Balancer Controller..."
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+          helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            -n kube-system \
+            --set clusterName="$CLUSTER_NAME" \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --wait
+        fi
+      
+      # Prepare application deployment
+      - echo "Preparing StreamFlix application deployment..."
+      - ECR_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/streamflix-app
+      
+      # Update Helm values with ECR image
+      - cp 02-K8s/helm/streamflix-app/values.yaml values-deploy.yaml
+      - sed -i "s|repository: .*|repository: \"$ECR_URI\"|g" values-deploy.yaml
+      - |
+        if [ -n "$IMAGE_TAG" ]; then
+          sed -i "s|tag: .*|tag: \"$IMAGE_TAG\"|g" values-deploy.yaml
+        else
+          sed -i "s|tag: .*|tag: \"latest\"|g" values-deploy.yaml
+        fi
+      
+      # Create namespace
+      - kubectl create namespace netflix --dry-run=client -o yaml | kubectl apply -f -
+      
+      # Deploy application with Helm
+      - echo "Deploying StreamFlix application..."
+      - |
+        helm upgrade --install streamflix-app 02-K8s/helm/streamflix-app \
+          -f values-deploy.yaml \
+          --namespace netflix \
+          --create-namespace \
+          --wait \
+          --timeout=600s \
+          --atomic
+
+  post_build:
+    commands:
+      - echo "CD Post-build phase started on `date`"
+      
+      # Verify deployment
+      - echo "Verifying deployment..."
+      - kubectl get all -n netflix
+      
+      # Wait for ALB to be ready
+      - echo "Waiting for Application Load Balancer..."
+      - |
+        for i in {1..20}; do
+          ALB_URL=$(kubectl get ingress streamflix-app-ingress -n netflix -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+          if [ -n "$ALB_URL" ]; then
+            echo "ALB URL: http://$ALB_URL"
+            break
+          fi
+          echo "Waiting for ALB... ($i/20)"
+          sleep 15
+        done
+      
+      # Health check
+      - |
+        if [ -n "$ALB_URL" ]; then
+          echo "Testing application health..."
+          sleep 30  # Wait for ALB to initialize
+          for i in {1..5}; do
+            if curl -s -o /dev/null -w "%{http_code}" "http://$ALB_URL/health" | grep -q "200"; then
+              echo "✅ Application health check PASSED"
+              break
+            fi
+            echo "Health check attempt $i/5..."
+            sleep 10
+          done
+        fi
+      
+      # Generate deployment report
+      - |
+        cat > deployment-report.txt << EOF
+        Deployment Report
+        =================
+        Environment: $ENV
+        Cluster: $CLUSTER_NAME
+        Namespace: netflix
+        Application: StreamFlix
+        Image: $ECR_URI:${IMAGE_TAG:-latest}
+        ALB URL: http://$ALB_URL
+        Deployment Time: $(date)
+        Build Number: $CODEBUILD_BUILD_NUMBER
+        EOF
+      
+      - cat deployment-report.txt
+      
+      # Cleanup
+      - rm -f values-deploy.yaml
+      
+      - |
+        if [ $CODEBUILD_BUILD_SUCCEEDING -eq 1 ]; then
+          echo "🚀 Deployment SUCCESSFUL to $ENV environment"
+          echo "StreamFlix is live at: http://$ALB_URL"
+        else
+          echo "❌ Deployment FAILED"
+          kubectl describe pods -n netflix
+          exit 1
+        fi
 
 artifacts:
   files:
-    - "**/*"
-  name: terraform-cd-$ENV-$ACTIONS
+    - deployment-report.txt
+  name: cd-artifacts-$ENV-$CODEBUILD_BUILD_NUMBER
+
+cache:
+  paths:
+    - '/root/.terraform.d/**/*'

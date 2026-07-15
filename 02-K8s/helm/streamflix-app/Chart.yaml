@@ -1,9 +1,9 @@
 apiVersion: v2
-name: nginx-app
-description: A simple nginx web application for Day 4 Kubernetes deployment
+name: streamflix-app
+description: StreamFlix - Netflix-like React Application for Kubernetes
 type: application
-version: 0.1.0
-appVersion: "1.25"
+version: 1.0.0
+appVersion: "1.0.0"
 home: https://github.com/your-org/aws-devops-platform
 sources:
   - https://github.com/your-org/aws-devops-platform
@@ -11,9 +11,10 @@ maintainers:
   - name: DevOps Team
     email: devops@example.com
 keywords:
-  - nginx
-  - web
+  - streamflix
+  - netflix
+  - react
+  - frontend
   - kubernetes
-  - demo
 annotations:
-  category: WebServer
+  category: WebApplication

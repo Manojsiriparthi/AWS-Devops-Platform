@@ -1,44 +1,180 @@
 version: 0.2
 
+# ==============================================================================
+# AWS CodeBuild - Main Build Specification
+# Builds and deploys infrastructure across environments
+# ==============================================================================
+
 env:
   variables:
-    TF_IN_AUTOMATION: "true"
-    TF_VERSION: "1.12.2"
+    # Default environment (can be overridden)
+    ENV: "dev"
+    AWS_DEFAULT_REGION: "us-east-1"
+    
+  parameter-store:
+    # Store sensitive values in Parameter Store
+    # DOCKER_HUB_USERNAME: /codebuild/docker-hub-username
+    # DOCKER_HUB_PASSWORD: /codebuild/docker-hub-password
 
 phases:
   install:
     runtime-versions:
-      python: 3.12
+      python: 3.9
+      nodejs: 18
+      docker: 20
     commands:
-      - curl -fsSL -o terraform.zip https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip
-      - unzip -o terraform.zip -d /usr/local/bin
+      - echo "Installing dependencies..."
+      
+      # Install Terraform
+      - wget -O terraform.zip https://releases.hashicorp.com/terraform/1.5.0/terraform_1.5.0_linux_amd64.zip
+      - unzip terraform.zip
+      - mv terraform /usr/local/bin/
       - terraform version
+      
+      # Install kubectl
+      - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+      - chmod +x kubectl
+      - mv kubectl /usr/local/bin/
+      - kubectl version --client
+      
+      # Install Helm
+      - curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+      - chmod 700 get_helm.sh
+      - ./get_helm.sh
+      - helm version
+      
+      # Install Node.js dependencies for React app
+      - cd 02-K8s/frontend-app && npm ci && cd ../..
 
   pre_build:
     commands:
-      - echo "Environment - $ENV"
-      - echo "Actions - $ACTIONS"
+      - echo "Pre-build phase started on `date`"
+      - echo "Environment: $ENV"
+      - echo "AWS Region: $AWS_DEFAULT_REGION"
+      
+      # Authenticate Docker to ECR
+      - echo "Logging in to Amazon ECR..."
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      
+      # Terraform format check
+      - echo "Checking Terraform formatting..."
+      - terraform fmt -check -recursive -diff
+      
+      # Terraform validation
+      - echo "Validating Terraform configurations..."
       - cd 01-Infra/environments/$ENV
-      - echo "Cleaning up any existing locks..."
-      - aws s3 rm s3://demo-eks-manoj-shopcase/envs/dev/network/terraform.tfstate.tflock --ignore-error || true
+      - terraform init -backend=false
+      - terraform validate
+      - cd ../../..
+      
+      - cd 02-K8s/terraform/environments/$ENV  
+      - terraform init -backend=false
+      - terraform validate
+      - cd ../../../..
 
   build:
     commands:
-      - terraform init -input=false
-      - terraform plan -input=false -out=tfplan -lock=false
-      - echo "Action to execute - $ACTIONS"
+      - echo "Build phase started on `date`"
+      
+      # Build React application Docker image
+      - echo "Building StreamFlix React application..."
+      - cd 02-K8s/frontend-app
       - |
-        if [ "$ACTIONS" = "apply" ]; then
-          terraform apply -input=false -auto-approve tfplan
-        elif [ "$ACTIONS" = "destroy" ]; then
-          terraform destroy -input=false -auto-approve -lock=false
-        else
-          echo "Invalid ACTIONS value: $ACTIONS"
-          echo "Valid values: apply, destroy"
-          exit 1
+        docker build \
+          --build-arg REACT_APP_VERSION="1.0.0" \
+          --build-arg REACT_APP_BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          --build-arg REACT_APP_ENVIRONMENT="$ENV" \
+          -t streamflix-app:$CODEBUILD_BUILD_NUMBER \
+          -t streamflix-app:latest .
+      - cd ../..
+      
+      # Create ECR repository if it doesn't exist
+      - |
+        aws ecr describe-repositories --repository-names streamflix-app --region $AWS_DEFAULT_REGION || \
+        aws ecr create-repository \
+          --repository-name streamflix-app \
+          --region $AWS_DEFAULT_REGION \
+          --image-tag-mutability MUTABLE \
+          --image-scanning-configuration scanOnPush=true
+      
+      # Tag and push Docker image to ECR
+      - echo "Pushing Docker image to ECR..."
+      - ECR_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/streamflix-app
+      - docker tag streamflix-app:latest $ECR_URI:latest
+      - docker tag streamflix-app:$CODEBUILD_BUILD_NUMBER $ECR_URI:$CODEBUILD_BUILD_NUMBER
+      - docker push $ECR_URI:latest
+      - docker push $ECR_URI:$CODEBUILD_BUILD_NUMBER
+      
+      # Deploy infrastructure if needed
+      - |
+        if [ "$DEPLOY_INFRASTRUCTURE" = "true" ]; then
+          echo "Deploying infrastructure for $ENV environment..."
+          
+          # Deploy VPC infrastructure
+          cd 01-Infra/environments/$ENV
+          terraform init
+          terraform plan -out=tfplan
+          terraform apply tfplan
+          cd ../../..
+          
+          # Deploy EKS infrastructure  
+          cd 02-K8s/terraform/environments/$ENV
+          terraform init
+          terraform plan -out=tfplan
+          terraform apply tfplan
+          cd ../../../..
         fi
+      
+      # Deploy application to Kubernetes
+      - |
+        if [ "$DEPLOY_APPLICATION" = "true" ]; then
+          echo "Deploying StreamFlix application..."
+          
+          # Configure kubectl for EKS
+          CLUSTER_NAME=$(cd 02-K8s/terraform/environments/$ENV && terraform output -raw cluster_name)
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_DEFAULT_REGION
+          
+          # Create namespace
+          kubectl create namespace netflix --dry-run=client -o yaml | kubectl apply -f -
+          
+          # Update Helm values with ECR image
+          sed -i "s|repository: .*|repository: \"$ECR_URI\"|g" 02-K8s/helm/streamflix-app/values.yaml
+          sed -i "s|tag: .*|tag: \"$CODEBUILD_BUILD_NUMBER\"|g" 02-K8s/helm/streamflix-app/values.yaml
+          
+          # Deploy with Helm
+          helm upgrade --install streamflix-app 02-K8s/helm/streamflix-app \
+            --namespace netflix \
+            --create-namespace \
+            --wait \
+            --timeout=600s
+          
+          echo "Application deployed successfully!"
+        fi
+
+  post_build:
+    commands:
+      - echo "Post-build phase started on `date`"
+      
+      # Display deployment status
+      - |
+        if [ "$DEPLOY_APPLICATION" = "true" ]; then
+          echo "Deployment Status:"
+          kubectl get all -n netflix
+          
+          # Get ALB URL if available
+          ALB_URL=$(kubectl get ingress streamflix-app-ingress -n netflix -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Pending")
+          echo "StreamFlix URL: http://$ALB_URL"
+        fi
+      
+      - echo "Build completed on `date`"
 
 artifacts:
   files:
-    - "**/*"
-  name: terraform-cd-$ENV-$ACTIONS
+    - '**/*'
+  name: aws-devops-platform-$ENV-$(date +%Y-%m-%d)
+
+cache:
+  paths:
+    - '/root/.npm/**/*'
+    - '/usr/local/lib/node_modules/**/*'
+    - '02-K8s/frontend-app/node_modules/**/*'

@@ -1,42 +1,60 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Multi-environment Terraform CI/CD Pipeline'
+Description: 'Complete CI/CD Pipeline for AWS DevOps Platform with StreamFlix Application'
 
 Parameters:
+  ProjectName:
+    Type: String
+    Default: 'aws-devops-platform'
+    Description: 'Name of the project'
+  
   GitHubRepo:
     Type: String
-    Description: GitHub repository name
-    Default: your-repo-name
-  GitHubOwner:
+    Description: 'GitHub repository name (e.g., username/repository)'
+  
+  GitHubBranch:
     Type: String
-    Description: GitHub repository owner
-    Default: your-github-username
+    Default: 'main'
+    Description: 'GitHub branch to track'
+  
   GitHubToken:
     Type: String
     NoEcho: true
-    Description: GitHub personal access token
-  S3BucketName:
+    Description: 'GitHub personal access token'
+  
+  Environment:
     Type: String
-    Description: S3 bucket for artifacts
-    Default: demo-eks-manoj-shopcase
+    Default: 'dev'
+    AllowedValues: ['dev', 'qa', 'prod']
+    Description: 'Target environment'
 
 Resources:
   # S3 Bucket for Pipeline Artifacts
-  ArtifactStore:
+  ArtifactsBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "${S3BucketName}-pipeline-artifacts"
+      BucketName: !Sub '${ProjectName}-pipeline-artifacts-${AWS::AccountId}-${AWS::Region}'
       VersioningConfiguration:
         Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldArtifacts
+            Status: Enabled
+            ExpirationInDays: 30
 
   # CodeBuild Service Role
-  CodeBuildServiceRole:
+  CodeBuildRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: !Sub '${ProjectName}-codebuild-role'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -46,8 +64,9 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/PowerUserAccess
+        - arn:aws:iam::aws:policy/IAMFullAccess
       Policies:
-        - PolicyName: CodeBuildLogsPolicy
+        - PolicyName: CodeBuildPolicy
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -56,17 +75,107 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*'
               - Effect: Allow
                 Action:
                   - s3:GetObject
                   - s3:PutObject
-                Resource: !Sub "${ArtifactStore.Arn}/*"
+                  - s3:GetObjectVersion
+                Resource: !Sub '${ArtifactsBucket}/*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:GetAuthorizationToken
+                  - ecr:CreateRepository
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                Resource: '*'
+
+  # CI CodeBuild Project
+  CIProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ProjectName}-ci'
+      Description: 'Continuous Integration - Tests and validation'
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: ENV
+            Value: !Ref Environment
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec-ci.yml
+      TimeoutInMinutes: 30
+
+  # CD CodeBuild Project  
+  CDProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ProjectName}-cd'
+      Description: 'Continuous Deployment - Infrastructure and application deployment'
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: ENV
+            Value: !Ref Environment
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec-cd.yml
+      TimeoutInMinutes: 60
+
+  # Production Build Project (for full deployment)
+  ProductionBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ProjectName}-production-build'
+      Description: 'Full build and deployment pipeline'
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: ENV
+            Value: !Ref Environment
+          - Name: DEPLOY_INFRASTRUCTURE
+            Value: 'true'
+          - Name: DEPLOY_APPLICATION
+            Value: 'true'
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.yml
+      TimeoutInMinutes: 90
 
   # CodePipeline Service Role
-  CodePipelineServiceRole:
+  CodePipelineRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: !Sub '${ProjectName}-pipeline-role'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -75,7 +184,7 @@ Resources:
               Service: codepipeline.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: CodePipelinePolicy
+        - PolicyName: PipelinePolicy
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -83,140 +192,30 @@ Resources:
                 Action:
                   - s3:GetObject
                   - s3:PutObject
-                  - s3:GetBucketVersioning
-                Resource:
-                  - !Sub "${ArtifactStore.Arn}"
-                  - !Sub "${ArtifactStore.Arn}/*"
+                  - s3:GetObjectVersion
+                Resource: !Sub '${ArtifactsBucket}/*'
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !Ref ArtifactsBucket
               - Effect: Allow
                 Action:
                   - codebuild:BatchGetBuilds
                   - codebuild:StartBuild
-                Resource: "*"
+                Resource:
+                  - !GetAtt CIProject.Arn
+                  - !GetAtt CDProject.Arn
+                  - !GetAtt ProductionBuildProject.Arn
 
-  # CodeBuild Projects
-  DevCIProject:
-    Type: AWS::CodeBuild::Project
-    Properties:
-      Name: terraform-ci-dev
-      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
-      Artifacts:
-        Type: CODEPIPELINE
-      Environment:
-        Type: LINUX_CONTAINER
-        ComputeType: BUILD_GENERAL1_MEDIUM
-        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
-        EnvironmentVariables:
-          - Name: ENV
-            Value: dev
-            Type: PLAINTEXT
-      Source:
-        Type: CODEPIPELINE
-        BuildSpec: buildspec-ci.yml
-
-  DevCDProject:
-    Type: AWS::CodeBuild::Project
-    Properties:
-      Name: terraform-cd-dev
-      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
-      Artifacts:
-        Type: CODEPIPELINE
-      Environment:
-        Type: LINUX_CONTAINER
-        ComputeType: BUILD_GENERAL1_MEDIUM
-        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
-        EnvironmentVariables:
-          - Name: ENV
-            Value: dev
-            Type: PLAINTEXT
-      Source:
-        Type: CODEPIPELINE
-        BuildSpec: buildspec-cd.yml
-
-  QACIProject:
-    Type: AWS::CodeBuild::Project
-    Properties:
-      Name: terraform-ci-qa
-      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
-      Artifacts:
-        Type: CODEPIPELINE
-      Environment:
-        Type: LINUX_CONTAINER
-        ComputeType: BUILD_GENERAL1_MEDIUM
-        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
-        EnvironmentVariables:
-          - Name: ENV
-            Value: qa
-            Type: PLAINTEXT
-      Source:
-        Type: CODEPIPELINE
-        BuildSpec: buildspec-ci.yml
-
-  QACDProject:
-    Type: AWS::CodeBuild::Project
-    Properties:
-      Name: terraform-cd-qa
-      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
-      Artifacts:
-        Type: CODEPIPELINE
-      Environment:
-        Type: LINUX_CONTAINER
-        ComputeType: BUILD_GENERAL1_MEDIUM
-        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
-        EnvironmentVariables:
-          - Name: ENV
-            Value: qa
-            Type: PLAINTEXT
-      Source:
-        Type: CODEPIPELINE
-        BuildSpec: buildspec-cd.yml
-
-  ProdCIProject:
-    Type: AWS::CodeBuild::Project
-    Properties:
-      Name: terraform-ci-prod
-      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
-      Artifacts:
-        Type: CODEPIPELINE
-      Environment:
-        Type: LINUX_CONTAINER
-        ComputeType: BUILD_GENERAL1_MEDIUM
-        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
-        EnvironmentVariables:
-          - Name: ENV
-            Value: prod
-            Type: PLAINTEXT
-      Source:
-        Type: CODEPIPELINE
-        BuildSpec: buildspec-ci.yml
-
-  ProdCDProject:
-    Type: AWS::CodeBuild::Project
-    Properties:
-      Name: terraform-cd-prod
-      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
-      Artifacts:
-        Type: CODEPIPELINE
-      Environment:
-        Type: LINUX_CONTAINER
-        ComputeType: BUILD_GENERAL1_MEDIUM
-        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
-        EnvironmentVariables:
-          - Name: ENV
-            Value: prod
-            Type: PLAINTEXT
-      Source:
-        Type: CODEPIPELINE
-        BuildSpec: buildspec-cd.yml
-
-  # CodePipeline
-  TerraformPipeline:
+  # CI/CD Pipeline
+  Pipeline:
     Type: AWS::CodePipeline::Pipeline
     Properties:
-      Name: terraform-multi-env-pipeline
-      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      Name: !Sub '${ProjectName}-pipeline'
+      RoleArn: !GetAtt CodePipelineRole.Arn
       ArtifactStore:
         Type: S3
-        Location: !Ref ArtifactStore
+        Location: !Ref ArtifactsBucket
       Stages:
         # Source Stage
         - Name: Source
@@ -228,135 +227,128 @@ Resources:
                 Provider: GitHub
                 Version: '1'
               Configuration:
-                Owner: !Ref GitHubOwner
-                Repo: !Ref GitHubRepo
-                Branch: main
+                Owner: !Select [0, !Split ['/', !Ref GitHubRepo]]
+                Repo: !Select [1, !Split ['/', !Ref GitHubRepo]]
+                Branch: !Ref GitHubBranch
                 OAuthToken: !Ref GitHubToken
+                PollForSourceChanges: true
               OutputArtifacts:
                 - Name: SourceOutput
-
-        # Dev Environment
-        - Name: Dev-CI
+        
+        # CI Stage
+        - Name: CI
           Actions:
-            - Name: DevValidation
+            - Name: ContinuousIntegration
               ActionTypeId:
                 Category: Build
                 Owner: AWS
                 Provider: CodeBuild
                 Version: '1'
               Configuration:
-                ProjectName: !Ref DevCIProject
+                ProjectName: !Ref CIProject
               InputArtifacts:
                 - Name: SourceOutput
               OutputArtifacts:
-                - Name: DevCIOutput
-
-        - Name: Dev-CD
+                - Name: CIOutput
+        
+        # Manual Approval for Production
+        - Name: Approval
           Actions:
-            - Name: DevDeploy
-              ActionTypeId:
-                Category: Build
-                Owner: AWS
-                Provider: CodeBuild
-                Version: '1'
-              Configuration:
-                ProjectName: !Ref DevCDProject
-              InputArtifacts:
-                - Name: SourceOutput
-              OutputArtifacts:
-                - Name: DevCDOutput
-
-        # QA Environment
-        - Name: QA-CI
-          Actions:
-            - Name: QAValidation
-              ActionTypeId:
-                Category: Build
-                Owner: AWS
-                Provider: CodeBuild
-                Version: '1'
-              Configuration:
-                ProjectName: !Ref QACIProject
-              InputArtifacts:
-                - Name: SourceOutput
-              OutputArtifacts:
-                - Name: QACIOutput
-
-        - Name: QA-Approval
-          Actions:
-            - Name: QAManualApproval
+            - Name: ManualApproval
               ActionTypeId:
                 Category: Approval
                 Owner: AWS
                 Provider: Manual
                 Version: '1'
               Configuration:
-                CustomData: 'Please review the QA deployment plan and approve to proceed.'
-
-        - Name: QA-CD
+                NotificationArn: !Ref ApprovalTopic
+                CustomData: !Sub 'Please review and approve deployment to ${Environment} environment'
+        
+        # CD Stage
+        - Name: CD
           Actions:
-            - Name: QADeploy
+            - Name: ContinuousDeployment
               ActionTypeId:
                 Category: Build
                 Owner: AWS
                 Provider: CodeBuild
                 Version: '1'
               Configuration:
-                ProjectName: !Ref CDProject  # Same project as dev
-                EnvironmentVariablesOverride: '[{"name":"ENV","value":"qa","type":"PLAINTEXT"}]'
+                ProjectName: !Ref CDProject
               InputArtifacts:
                 - Name: SourceOutput
               OutputArtifacts:
-                - Name: QACDOutput
+                - Name: CDOutput
+              RunOrder: 1
 
-        # Prod Environment
-        - Name: Prod-CI
+  # Alternative Full Pipeline (without approval)
+  QuickPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub '${ProjectName}-quick-pipeline'
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactsBucket
+      Stages:
+        - Name: Source
           Actions:
-            - Name: ProdValidation
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: '1'
+              Configuration:
+                Owner: !Select [0, !Split ['/', !Ref GitHubRepo]]
+                Repo: !Select [1, !Split ['/', !Ref GitHubRepo]]
+                Branch: !Ref GitHubBranch
+                OAuthToken: !Ref GitHubToken
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: SourceOutput
+        
+        - Name: BuildAndDeploy
+          Actions:
+            - Name: FullDeployment
               ActionTypeId:
                 Category: Build
                 Owner: AWS
                 Provider: CodeBuild
                 Version: '1'
               Configuration:
-                ProjectName: !Ref ProdCIProject
+                ProjectName: !Ref ProductionBuildProject
               InputArtifacts:
                 - Name: SourceOutput
-              OutputArtifacts:
-                - Name: ProdCIOutput
 
-        - Name: Prod-Approval
-          Actions:
-            - Name: ProdManualApproval
-              ActionTypeId:
-                Category: Approval
-                Owner: AWS
-                Provider: Manual
-                Version: '1'
-              Configuration:
-                CustomData: 'Please review the PRODUCTION deployment plan and approve to proceed.'
-
-        - Name: Prod-CD
-          Actions:
-            - Name: ProdDeploy
-              ActionTypeId:
-                Category: Build
-                Owner: AWS
-                Provider: CodeBuild
-                Version: '1'
-              Configuration:
-                ProjectName: !Ref CDProject  # Same project as dev
-                EnvironmentVariablesOverride: '[{"name":"ENV","value":"prod","type":"PLAINTEXT"}]'
-              InputArtifacts:
-                - Name: SourceOutput
-              OutputArtifacts:
-                - Name: ProdCDOutput
+  # SNS Topic for Approvals
+  ApprovalTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-approval-notifications'
+      DisplayName: 'Pipeline Approval Notifications'
 
 Outputs:
   PipelineName:
-    Description: Name of the created pipeline
-    Value: !Ref TerraformPipeline
+    Description: 'Name of the CodePipeline'
+    Value: !Ref Pipeline
+    Export:
+      Name: !Sub '${AWS::StackName}-PipelineName'
   
-  PipelineUrl:
-    Description: URL of the pipeline in AWS Console
-    Value: !Sub "https://console.aws.amazon.com/codesuite/codepipeline/pipelines/${TerraformPipeline}/view"
+  QuickPipelineName:
+    Description: 'Name of the Quick CodePipeline'
+    Value: !Ref QuickPipeline
+    Export:
+      Name: !Sub '${AWS::StackName}-QuickPipelineName'
+  
+  ArtifactsBucket:
+    Description: 'S3 Bucket for pipeline artifacts'
+    Value: !Ref ArtifactsBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-ArtifactsBucket'
+  
+  ApprovalTopic:
+    Description: 'SNS Topic for pipeline approvals'
+    Value: !Ref ApprovalTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-ApprovalTopic'

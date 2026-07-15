@@ -1,0 +1,4 @@
+# Lambda function requirements
+# boto3 is provided by AWS Lambda runtime, but we specify for local development
+
+boto3>=1.28.0

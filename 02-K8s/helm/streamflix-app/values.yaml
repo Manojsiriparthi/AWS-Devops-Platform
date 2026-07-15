@@ -1,0 +1,132 @@
+# StreamFlix Application - Helm Values
+# Netflix-like React Application for Kubernetes
+
+# Application configuration
+app:
+  name: streamflix-app
+  version: "1.0.0"
+
+# Image configuration (will be updated by deploy script)
+image:
+  repository: "ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/streamflix-app"
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# Deployment configuration
+replicaCount: 3
+namespace: netflix
+
+# Resource limits and requests
+resources:
+  limits:
+    cpu: 300m
+    memory: 512Mi
+  requests:
+    cpu: 150m
+    memory: 256Mi
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 80
+
+# Ingress configuration with AWS Load Balancer Controller
+ingress:
+  enabled: true
+  className: "alb"
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
+    alb.ingress.kubernetes.io/success-codes: "200"
+    alb.ingress.kubernetes.io/load-balancer-name: "streamflix-alb"
+    alb.ingress.kubernetes.io/tags: "Project=aws-devops-platform,Environment=netflix,Component=frontend"
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+  hosts:
+    - host: ""
+      paths:
+        - path: /
+          pathType: Prefix
+
+# Environment configuration
+environment: netflix
+
+# Health checks
+healthCheck:
+  enabled: true
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 80
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: 80
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# Horizontal Pod Autoscaler
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 8
+  targetCPUUtilizationPercentage: 70
+
+# Pod disruption budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# Security context
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  runAsGroup: 1001
+  fsGroup: 1001
+
+# Container security context
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+# Affinity rules for better distribution
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app
+            operator: In
+            values:
+            - streamflix-app
+        topologyKey: kubernetes.io/hostname
+
+# Application configuration
+config:
+  REACT_APP_ENVIRONMENT: "netflix"
+  REACT_APP_VERSION: "1.0.0"
+
+# Additional labels
+labels:
+  app.kubernetes.io/name: streamflix
+  app.kubernetes.io/component: frontend
+  app.kubernetes.io/part-of: aws-devops-platform
+  environment: netflix
+
+# Additional annotations
+annotations:
+  deployment.kubernetes.io/revision: "1"
+  description: "StreamFlix Netflix-like React application"

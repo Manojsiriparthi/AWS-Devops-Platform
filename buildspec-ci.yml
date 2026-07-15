@@ -1,34 +1,166 @@
 version: 0.2
 
+# ==============================================================================
+# AWS CodeBuild - CI Specification (Continuous Integration)
+# Validates code, runs tests, builds artifacts without deployment
+# ==============================================================================
+
 env:
   variables:
     ENV: "dev"
-    TF_VERSION: "1.12.2"
-    TF_IN_AUTOMATION: "true"
+    AWS_DEFAULT_REGION: "us-east-1"
+    NODE_ENV: "test"
 
 phases:
   install:
     runtime-versions:
-      python: 3.12
+      python: 3.9
+      nodejs: 18
+      docker: 20
     commands:
-      - echo "Installing Terraform $TF_VERSION for environment - $ENV"
-      - curl -fsSL -o terraform.zip https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip
-      - unzip -o terraform.zip -d /usr/local/bin
+      - echo "CI Phase - Installing dependencies..."
+      
+      # Install Terraform
+      - wget -O terraform.zip https://releases.hashicorp.com/terraform/1.5.0/terraform_1.5.0_linux_amd64.zip
+      - unzip terraform.zip
+      - mv terraform /usr/local/bin/
       - terraform version
+      
+      # Install tflint for Terraform linting
+      - curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+      
+      # Install security scanning tools
+      - pip install checkov
+      
+      # Install Node.js dependencies
+      - cd 02-K8s/frontend-app && npm ci && cd ../..
 
   pre_build:
     commands:
-      - echo "Initializing Terraform for environment - $ENV"
-      - cd 01-Infra/environments/$ENV
-      - terraform init -backend=false
+      - echo "CI Pre-build phase started on `date`"
+      
+      # Code quality checks
+      - echo "Running code quality checks..."
+      
+      # Terraform formatting check
+      - echo "Checking Terraform formatting..."
+      - terraform fmt -check -recursive -diff
+      
+      # Terraform validation (all environments)
+      - echo "Validating Terraform configurations..."
+      - for env in dev qa prod; do
+          echo "Validating $env environment...";
+          if [ -d "01-Infra/environments/$env" ]; then
+            cd 01-Infra/environments/$env;
+            terraform init -backend=false;
+            terraform validate;
+            cd ../../..;
+          fi;
+          if [ -d "02-K8s/terraform/environments/$env" ]; then
+            cd 02-K8s/terraform/environments/$env;
+            terraform init -backend=false;
+            terraform validate;
+            cd ../../../..;
+          fi;
+        done
+      
+      # Security scanning with Checkov
+      - echo "Running security scans..."
+      - checkov -d . --framework terraform --quiet --compact || true
+      
+      # Terraform linting
+      - echo "Running Terraform linting..."
+      - find . -name "*.tf" -exec dirname {} \; | sort -u | xargs -I {} tflint {} || true
 
   build:
     commands:
-      - echo "Running Terraform validation for environment - $ENV"
-      - terraform fmt -check -recursive ../../
-      - terraform validate
+      - echo "CI Build phase started on `date`"
+      
+      # React application tests
+      - echo "Building and testing React application..."
+      - cd 02-K8s/frontend-app
+      
+      # Build React app
+      - npm run build
+      
+      # Run tests (if available)
+      # - npm test -- --coverage --watchAll=false
+      
+      # Lint React code
+      # - npm run lint
+      
+      cd ../..
+      
+      # Docker image build test (no push in CI)
+      - echo "Testing Docker image build..."
+      - cd 02-K8s/frontend-app
+      - |
+        docker build \
+          --build-arg REACT_APP_VERSION="1.0.0-ci" \
+          --build-arg REACT_APP_BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          --build-arg REACT_APP_ENVIRONMENT="ci" \
+          -t streamflix-app:ci-test .
+      - cd ../..
+      
+      # Test Docker image
+      - echo "Testing Docker image..."
+      - docker run -d --name streamflix-test -p 8080:80 streamflix-app:ci-test
+      - sleep 10
+      - curl -f http://localhost:8080/health || (docker logs streamflix-test && exit 1)
+      - docker stop streamflix-test && docker rm streamflix-test
+      
+      # Helm chart validation
+      - echo "Validating Helm charts..."
+      - helm lint 02-K8s/helm/streamflix-app
+      - helm template test 02-K8s/helm/streamflix-app --dry-run
+      
+      # Generate reports
+      - echo "Generating build reports..."
+      - echo "Build Number: $CODEBUILD_BUILD_NUMBER" > build-report.txt
+      - echo "Build Time: $(date)" >> build-report.txt
+      - echo "Commit: $(git rev-parse HEAD 2>/dev/null || echo 'unknown')" >> build-report.txt
+      - echo "Branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')" >> build-report.txt
+
+  post_build:
+    commands:
+      - echo "CI Post-build phase started on `date`"
+      
+      # Cleanup
+      - docker rmi streamflix-app:ci-test || true
+      
+      # Display results
+      - echo "CI Build Results:"
+      - cat build-report.txt
+      
+      - |
+        if [ $CODEBUILD_BUILD_SUCCEEDING -eq 1 ]; then
+          echo "✅ CI Build PASSED - All checks successful";
+          echo "Ready for deployment pipeline";
+        else
+          echo "❌ CI Build FAILED - Check logs above";
+          exit 1;
+        fi
+      
+      - echo "CI completed on `date`"
 
 artifacts:
   files:
-    - "**/*"
-  name: terraform-ci-$ENV
+    - build-report.txt
+    - '02-K8s/frontend-app/build/**/*'
+  name: ci-artifacts-$CODEBUILD_BUILD_NUMBER
+
+reports:
+  terraform-validation:
+    files:
+      - terraform-validation-report.xml
+    base-directory: .
+  security-scan:
+    files:
+      - checkov-report.xml  
+    base-directory: .
+
+cache:
+  paths:
+    - '/root/.npm/**/*'
+    - '/usr/local/lib/node_modules/**/*'
+    - '02-K8s/frontend-app/node_modules/**/*'

@@ -69,6 +69,10 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        {{- range $key, $value := .Values.config }}
+        - name: {{ $key }}
+          value: {{ $value | quote }}
+        {{- end }}
         {{- if .Values.healthCheck.enabled }}
         livenessProbe:
           {{- toYaml .Values.healthCheck.livenessProbe | nindent 10 }}
@@ -81,18 +85,6 @@ spec:
         securityContext:
           {{- toYaml . | nindent 10 }}
         {{- end }}
-        volumeMounts:
-        - name: nginx-config
-          mountPath: /usr/share/nginx/html/index.html
-          subPath: index.html
-          readOnly: true
-      volumes:
-      - name: nginx-config
-        configMap:
-          name: {{ .Values.app.name }}-config
-          items:
-          - key: index.html
-            path: index.html
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
