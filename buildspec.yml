@@ -41,8 +41,3 @@ phases:
 artifacts:
   files:
     - "**/*"
-<<<<<<< HEAD
-  name: terraform-cd-$ENV-$ACTIONS
-=======
-  name: terraform-cd-$ENV-$ACTIONS
->>>>>>> 60c4a91 (application deploy files)
