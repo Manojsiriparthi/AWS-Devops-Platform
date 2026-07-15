@@ -41,3 +41,4 @@ phases:
 artifacts:
   files:
     - "**/*"
+  name: terraform-cd-$ENV-$ACTIONS
