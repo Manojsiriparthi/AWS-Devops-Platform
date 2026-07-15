@@ -10,7 +10,7 @@ cluster_enabled_log_types           = ["api", "audit"]  # Reduced logging for co
 # Node Group Configuration (Cost-optimized for dev)
 node_capacity_type     = "SPOT"                              # 60-70% cost savings
 node_instance_types    = ["t3.medium", "t3a.medium"]         # Multiple types for spot availability
-node_ami_type         = "AL2_x86_64"
+node_ami_type         = "AL2023_x86_64"
 node_disk_size        = 20
 node_desired_capacity = 2                                    # Start with 2 nodes
 node_max_capacity     = 3                                    # Allow scaling up to 3
